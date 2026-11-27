@@ -1,0 +1,155 @@
+import { ToastViewport } from "@/components/ToastViewport";
+import { RequireAuth } from "@/components/RequireAuth";
+import React, { StrictMode, useEffect, lazy, Suspense } from "react";
+import { createRoot } from "react-dom/client";
+import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import type { SyntraView } from "@/components/Sidebar";
+import "./index.css";
+
+// Lazy load route components for better code splitting
+const Landing = lazy(() => import("./pages/Landing.tsx"));
+const AuthPage = lazy(() => import("./pages/Auth.tsx"));
+const SyntraApp = lazy(() =>
+  import("@/components/SyntraApp").then((m) => ({ default: m.SyntraApp })),
+);
+const NotFound = lazy(() => import("./pages/NotFound.tsx"));
+
+/** Map a workspace path to its SYNTRA shell view. */
+function viewForPath(pathname: string): SyntraView {
+  if (pathname.startsWith("/history")) return "history";
+  if (pathname.startsWith("/about")) return "about";
+  return "investigate";
+}
+
+/** Workspace routes that share the SYNTRA application shell. */
+function WorkspaceRoutes() {
+  const { pathname } = useLocation();
+  return <SyntraApp key={viewForPath(pathname)} view={viewForPath(pathname)} />;
+}
+
+// Simple loading fallback for route transitions
+export function RouteLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="animate-pulse text-sm text-muted-foreground">
+        Loading SYNTRA…
+      </div>
+    </div>
+  );
+}
+
+/** Hard guard so runtime errors never leave the preview as a blank page. */
+export class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message: string; stack: string }
+> {
+  state = { hasError: false, message: "", stack: "" };
+  static getDerivedStateFromError(error: Error) {
+    return {
+      hasError: true,
+      message: error.message || "Unknown runtime error",
+      stack: error.stack || "",
+    };
+  }
+  componentDidCatch(err: Error) {
+    console.error("[WebContainer preview] Root crash:", err);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
+          <div className="max-w-lg text-center">
+            <p className="text-sm font-semibold">Preview runtime error</p>
+            <p className="mt-2 break-words text-xs text-muted-foreground">
+              {this.state.message}
+            </p>
+            {this.state.stack && (
+              <pre className="mt-3 max-h-40 overflow-auto rounded border border-border/60 p-2 text-left text-[10px] leading-4 text-muted-foreground/80">
+                {this.state.stack}
+              </pre>
+            )}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function RouteSyncer() {
+  const location = useLocation();
+  useEffect(() => {
+    window.parent.postMessage(
+      { type: "iframe-route-change", path: location.pathname },
+      "*",
+    );
+  }, [location.pathname]);
+
+  useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      if (event.data?.type === "navigate") {
+        if (event.data.direction === "back") window.history.back();
+        if (event.data.direction === "forward") window.history.forward();
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  return null;
+}
+
+const rootElement = document.getElementById("root");
+if (!rootElement) {
+  throw new Error("The frontend root element is missing.");
+}
+
+const root = import.meta.hot?.data.root ?? createRoot(rootElement);
+root.render(
+  <StrictMode>
+    <RootErrorBoundary>
+      <BrowserRouter>
+        <RouteSyncer />
+        <Suspense fallback={<RouteLoading />}>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route
+              path="/auth"
+              element={<AuthPage redirectAfterAuth="/investigate" />}
+            />
+            <Route
+              path="/investigate"
+              element={
+                <RequireAuth>
+                  <WorkspaceRoutes />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/history"
+              element={
+                <RequireAuth>
+                  <WorkspaceRoutes />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/about"
+              element={
+                <RequireAuth>
+                  <WorkspaceRoutes />
+                </RequireAuth>
+              }
+            />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
+      </BrowserRouter>
+      <ToastViewport />
+    </RootErrorBoundary>
+  </StrictMode>,
+);
+
+if (import.meta.hot) {
+  import.meta.hot.data.root = root;
+}
